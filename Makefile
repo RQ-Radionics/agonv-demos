@@ -9,7 +9,7 @@
 
 TARGET ?= esp32p4
 
-DEMOS     = mandelbrot 3dcube
+DEMOS     = mandelbrot 3dcube hatgraph
 DATA_DIR  = $(abspath ../agon-lite-v/data/$(TARGET)/demos)
 
 .PHONY: all clean install $(DEMOS)
