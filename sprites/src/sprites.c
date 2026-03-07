@@ -147,8 +147,8 @@ int _start(int argc, char **argv, t_mos_api *mos)
     mos->puts("Loading bitmaps...\r\n");
 
     /* Try to load from files; fall back to solid colours if missing */
-    int ok0 = load_bitmap_from_file("A:/pacman1.rgb", 0);
-    int ok1 = load_bitmap_from_file("A:/pacman2.rgb", 1);
+    int ok0 = load_bitmap_from_file("pacman1.rgb", 0);
+    int ok1 = load_bitmap_from_file("pacman2.rgb", 1);
     if (ok0 < 0) { make_solid_bitmap(0, 255, 255,   0); } /* yellow */
     if (ok1 < 0) { make_solid_bitmap(1, 255, 165,   0); } /* orange */
 

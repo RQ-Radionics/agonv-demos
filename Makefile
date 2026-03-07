@@ -22,12 +22,15 @@ $(DEMOS):
 install: all
 	@mkdir -p $(DATA_DIR)
 	@for demo in $(DEMOS); do \
-	    bin=$$demo/bin/*.bin; \
-	    for b in $$bin; do \
+	    for b in $$demo/bin/*.bin; do \
 	        [ -f "$$b" ] || continue; \
-	        name=$$(basename $$b); \
-	        cp "$$b" $(DATA_DIR)/$$name; \
-	        echo "  → $(DATA_DIR)/$$name"; \
+	        cp "$$b" $(DATA_DIR)/$$(basename $$b); \
+	        echo "  → $(DATA_DIR)/$$(basename $$b)"; \
+	    done; \
+	    for f in $$demo/*.rgb; do \
+	        [ -f "$$f" ] || continue; \
+	        cp "$$f" $(DATA_DIR)/$$(basename $$f); \
+	        echo "  → $(DATA_DIR)/$$(basename $$f)"; \
 	    done; \
 	done
 
