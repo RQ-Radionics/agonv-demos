@@ -9,7 +9,7 @@
 
 TARGET ?= esp32p4
 
-DEMOS     = mandelbrot 3dcube hatgraph sprites
+DEMOS     = mandelbrot 3dcube hatgraph sprites amazinggrace
 DATA_DIR  = $(abspath ../agon-lite-v/data/$(TARGET)/demos)
 
 .PHONY: all clean install $(DEMOS)
