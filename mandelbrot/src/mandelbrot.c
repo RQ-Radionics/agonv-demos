@@ -1,24 +1,22 @@
 /*
- * mandelbrot.c - Mandelbrot set benchmark for ESP32-MOS
+ * mandelbrot.c - Mandelbrot set demo for ESP32-MOS
  *
- * Direct translation of BBC BASIC by P.Mainwaring, March 19th 1990.
- * Uses VDU commands sent via mos->putch() to drive the Agon VDP.
+ * Usage:  mandelbrot [mode]
+ *   mode  VDP screen mode (default: 12 = 320x256 16 colours)
  *
- * BBC BASIC original logic:
- *   MODE 12  (320x256, 16 colours on Agon VDP)
- *   ITERS=32, COLS=64, SCALE=1
- *   XRANGE=-2.5, YRANGE=-1
- *   MAXX=1280, MAXY=1024
- *   XSTP=4, YSTP=5  (1280/320, 1024/200 — integer)
- *   4-pass interleave via A%[]={0,1,0,1}, B%[]={0,1,1,0}
- *   CR = XRANGE + K%*4/MAXX        (= -2.5 + K%/320)
- *   CI = YRANGE + J%*3/MAXX        (= -1   + J%*3/1280)
- *   colour C% = COLS-1 - IT*(COLS-1)/ITERS
- *   GCOL 0,C%  →  VDU 18,0,C%
- *   PLOT 69,K%,J%  →  VDU 25,69, K%lo,K%hi, J%lo,J%hi
+ * The program reads the actual resolution and colour count from the VDP
+ * sysvars after setting the mode, so it adapts automatically to any mode.
  *
- * Build:  make -C sdk mandelbrot
- * Run:    mandelbrot   (from MOS shell)
+ * VDU coordinate space is 2× pixel space on Agon, so:
+ *   MAXX = scrWidth  * 2 - 1  (max VDU X)
+ *   MAXY = scrHeight * 2 - 1  (max VDU Y)
+ *   XSTP = MAXX / scrWidth    (= 2, step between VDU columns)
+ *   YSTP = MAXY / scrHeight   (= 2, step between VDU rows)
+ *
+ * Build:  make -C mandelbrot
+ * Run:    mandelbrot        (mode 12)
+ *         mandelbrot 1      (mode 1 = 512x384 64 colours)
+ *         mandelbrot 3      (mode 3 = 640x480 16 colours)
  */
 
 #include <stdint.h>
@@ -28,28 +26,22 @@
 
 static t_mos_api *g_mos;
 
-static inline void vdu(uint8_t b)
-{
-    g_mos->putch(b);
-}
+static inline void vdu(uint8_t b)      { g_mos->putch(b); }
+static inline void vdu16(int16_t v)    { vdu((uint8_t)(v & 0xFF)); vdu((uint8_t)((v >> 8) & 0xFF)); }
 
-static void vdu_mode(uint8_t mode)
-{
-    vdu(22); vdu(mode);
-}
-
-/* GCOL 0, colour */
-static void vdu_gcol(uint8_t colour)
-{
-    vdu(18); vdu(0); vdu(colour);
-}
-
-/* PLOT 69 (plot point) at VDU coordinates (x, y) — 16-bit little-endian */
+static void vdu_mode(uint8_t mode)     { vdu(22); vdu(mode); }
+static void vdu_gcol(uint8_t colour)   { vdu(18); vdu(0); vdu(colour); }
 static void vdu_plot_point(int x, int y)
 {
-    vdu(25); vdu(69);
-    vdu((uint8_t)(x & 0xFF)); vdu((uint8_t)((x >> 8) & 0xFF));
-    vdu((uint8_t)(y & 0xFF)); vdu((uint8_t)((y >> 8) & 0xFF));
+    vdu(25); vdu(69); vdu16((int16_t)x); vdu16((int16_t)y);
+}
+
+/* ── Simple atoi (no stdlib) ─────────────────────────────────────────────── */
+static int s_atoi(const char *s)
+{
+    int n = 0;
+    while (*s >= '0' && *s <= '9') n = n * 10 + (*s++ - '0');
+    return n;
 }
 
 /* ── Mandelbrot ──────────────────────────────────────────────────────────── */
@@ -57,61 +49,71 @@ static void vdu_plot_point(int x, int y)
 __attribute__((section(".text.entry")))
 int _start(int argc, char **argv, t_mos_api *mos)
 {
-    (void)argc; (void)argv;
     g_mos = mos;
 
-    /* Constants matching the BBC BASIC original */
-    const int   ITERS  = 32;
-    const int   COLS   = 64;
-    const int   XSTP   = 4;          /* 1280/320 */
-    const int   YSTP   = 5;          /* 1024/200 */
-    const int   MAXX   = 1280;
-    const int   MAXY   = 1024;
-    const float XRANGE = -2.5f;
-    const float YRANGE = -1.0f;
+    /* Parse mode argument (default 12) */
+    uint8_t mode = 12;
+    if (argc >= 2) mode = (uint8_t)s_atoi(argv[1]);
 
-    /* 4-pass interleave: A%[]={0,1,0,1}, B%[]={0,1,1,0} */
+    /* Set mode and query actual resolution from VDP */
+    vdu_mode(mode);
+    mos->delay_ms(100);
+    mos->vdp_request_mode();
+
+    t_mos_sysvars *sv = mos->sysvars();
+    int pw = sv->scrWidth;    /* pixel width  */
+    int ph = sv->scrHeight;   /* pixel height */
+    int nc = sv->scrColours;  /* number of colours */
+
+    /* Clamp colours: use at most 64 for the gradient, at least 2 */
+    int COLS  = nc > 64 ? 64 : (nc < 2 ? 2 : nc);
+    int ITERS = 32;
+
+    /* Agon VDU space is always 1280x1024 regardless of screen resolution.
+     * Scale factor = VDU units per pixel. */
+    int xscale = 1280 / pw;
+    int yscale = 1024 / ph;
+
+    /* Fix real range -2.5..+1.0 (width=3.5, centre=-0.75).
+     * Derive imaginary range symmetrically from screen aspect ratio. */
+    float ci_half = 3.5f * (float)ph / (float)pw / 2.0f;
+
+    /* 4-pass interleave for progressive rendering */
     const int A[4] = {0, 1, 0, 1};
     const int B[4] = {0, 1, 1, 0};
 
-    vdu_mode(12);   /* 320x256, 16 colours */
-
     for (int i = 0; i < 4; i++) {
-        for (int j = A[i]; j <= MAXY; j += YSTP) {
-            for (int k = B[i]; k <= MAXX; k += XSTP) {
+        for (int py = B[i]; py < ph; py += 2) {
+            for (int px = A[i]; px < pw; px += 2) {
 
-                float cr = XRANGE + (float)k * 4.0f / (float)MAXX;
-                float ci = YRANGE + (float)j * 3.0f / (float)MAXX;
+                float cr = -2.5f + (float)px * 3.5f / (float)(pw - 1);
+                float ci = -ci_half + (float)py * (2.0f * ci_half) / (float)(ph - 1);
 
                 float zr = 0.0f, zi = 0.0f;
-                float zr2 = 0.0f, zi2 = 0.0f, zm = 0.0f;
+                float zr2 = 0.0f, zi2 = 0.0f;
                 int   it = 0;
 
                 do {
                     float z1 = zr2 - zi2 + cr;
-                    float z2 = 2.0f * zr * zi + ci;
+                    zi  = 2.0f * zr * zi + ci;
                     zr  = z1;
-                    zi  = z2;
                     zr2 = zr * zr;
                     zi2 = zi * zi;
-                    zm  = zr2 + zi2;
                     it++;
-                } while (it < ITERS && zm < 4.0f);
+                } while (it < ITERS && zr2 + zi2 < 4.0f);
 
-                /* colour: 63 - it*63/32, clamped to 0..63 */
                 int c = (COLS - 1) - it * (COLS - 1) / ITERS;
                 if (c < 0) c = 0;
 
                 vdu_gcol((uint8_t)c);
-                vdu_plot_point(k, j);
+                /* VDU origin is bottom-left, so invert Y */
+                vdu_plot_point(px * xscale, (ph - 1 - py) * yscale);
             }
         }
     }
 
-    /* Wait for keypress (GET equivalent) */
+    /* Wait for keypress then restore mode 1 */
     mos->getkey();
-
-    /* Restore MODE 1 */
     vdu_mode(1);
 
     return 0;
